@@ -1,7 +1,17 @@
 import os
+import sys
 from uuid import UUID
 from decimal import Decimal
 from sqlalchemy import select
+
+# When running this script as a standalone file (python scripts/seed.py)
+# Python's import path (sys.path[0]) is the `scripts/` directory, so the
+# top-level package `app` is not on sys.path. Insert the project root
+# (parent directory of `scripts`) at the front of sys.path so imports
+# like `from app.db import ...` work both inside the container and locally.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from app.db import SessionContext
 from app.models import Loan
