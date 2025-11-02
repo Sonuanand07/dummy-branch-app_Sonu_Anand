@@ -1,33 +1,152 @@
+version: '3.9'
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
+  # PostgreSQL Database Service
   db:
-    image: postgres:16
+    image: postgres:16-alpine
+    container_name: microloans-db-${ENV:-dev}
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: microloans
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-microloans}
+      PGTZ: UTC
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d microloans"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-microloans}"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
+      start_period: 10s
+    networks:
+      - microloans-network
+    mem_limit: ${DB_MEM_LIMIT:-512m}
+    cpus: ${DB_CPUS:-0.5}
+    restart: ${RESTART_POLICY:-unless-stopped}
 
+  # Flask API Service
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-Dockerfile}
+    container_name: microloans-api-${ENV:-dev}
     environment:
-      FLASK_ENV: development
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/microloans
-      PORT: 8000
-      PYTHONPATH: /app
+      FLASK_ENV: ${FLASK_ENV:-development}
+      FLASK_APP: wsgi.py
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@db:5432/microloans}
+      PORT: ${PORT:-8000}
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - ./certs:/certs:ro  # Mount certificates as read-only
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - microloans-network
+    mem_limit: ${API_MEM_LIMIT:-1g}
+    cpus: ${API_CPUS:-1}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    command: ${API_COMMAND:-gunicorn -w 2 -b 0.0.0.0:8000 --timeout 120 --access-logfile - --error-logfile - wsgi:app}
+    logging: *default-logging
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: microloans-prometheus-${ENV:-dev}
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
-      - "8000:8000"
-    command: gunicorn -w 2 -b 0.0.0.0:8000 wsgi:app
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - microloans-network
+    logging: *default-logging
+    profiles: ["monitoring"]
+
+  # Grafana Dashboards
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: microloans-grafana-${ENV:-dev}
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - microloans-network
+    depends_on:
+      - prometheus
+    logging: *default-logging
+    profiles: ["monitoring"]
 
 volumes:
   db_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  microloans-network:
+    driver: bridge
+
+
+# services:
+#   db:
+#     image: postgres:16
+#     environment:
+#       POSTGRES_USER: postgres
+#       POSTGRES_PASSWORD: postgres
+#       POSTGRES_DB: microloans
+#     ports:
+#       - "5432:5432"
+#     volumes:
+#       - db_data:/var/lib/postgresql/data
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U postgres -d microloans"]
+#       interval: 5s
+#       timeout: 5s
+#       retries: 10
+
+#   api:
+#     build: .
+#     environment:
+#       FLASK_ENV: development
+#       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/microloans
+#       PORT: 8000
+#       PYTHONPATH: /app
+#     depends_on:
+#       db:
+#         condition: service_healthy
+#     ports:
+#       - "8000:8000"
+#     command: gunicorn -w 2 -b 0.0.0.0:8000 wsgi:app
+
+# volumes:
+#   db_data:
